@@ -2,15 +2,10 @@ Set-StrictMode -Version 2.0
 
 $script:PolyntAdminUser = if ($env:POLYNT_ADMIN_USER) { $env:POLYNT_ADMIN_USER } else { '' }
 $script:PolyntLabelScript = if ($env:POLYNT_LABEL_SCRIPT) { $env:POLYNT_LABEL_SCRIPT } else { '' }
-$script:PolyntCredentialPath = Join-Path $(if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { $env:TEMP }) 'PolyntToolbox\credential.xml'
+$script:PolyntCredentialPath = Join-Path $(if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { $env:TEMP }) 'PolyntToolbox\credentials.xml'
+$script:PolyntLegacyCredentialPath = Join-Path $(if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { $env:TEMP }) 'PolyntToolbox\credential.xml'
 $script:PsExecPath = Join-Path $PSScriptRoot 'PsExec.exe'
 $script:AssystSettingsPath = Join-Path $(if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { $env:TEMP }) 'PolyntToolbox\assyst.xml'
-if (-not $script:PolyntAdminUser -and (Test-Path -LiteralPath $script:PolyntCredentialPath)) {
-    try {
-        $savedAdminCredential = Import-Clixml -LiteralPath $script:PolyntCredentialPath -ErrorAction Stop
-        if ($savedAdminCredential.UserName) { $script:PolyntAdminUser = [string]$savedAdminCredential.UserName }
-    } catch {}
-}
 $script:AssystApiBase = if ($env:ASSYST_API_BASE) { $env:ASSYST_API_BASE.TrimEnd('/') } else { 'https://itsupporttest.polynt.net/assystREST/v2' }
 $script:AssystAllowUntrustedCertificate = $true
 $script:AssystDefaultMovementReason = 'CUSTOMER REQ'
@@ -43,12 +38,20 @@ public static class PolyntCertificateValidation
 
 function Resolve-PolyntDomain {
     param([AllowEmptyString()][string]$Domain)
+    if ([string]::IsNullOrWhiteSpace($Domain)) { return '' }
     switch ($Domain.Trim().ToLowerInvariant()) {
         'polynt' { 'polynt.net' }
         { $_ -in @('resins','rsn') } { 'rsn.chem.corp.local' }
         'reichhold' { 'eu.reichhold.com' }
         default { $Domain }
     }
+}
+
+function Resolve-PolyntCredentialDomain {
+    param([AllowEmptyString()][string]$Domain)
+    $resolved = Resolve-PolyntDomain $Domain
+    if ([string]::IsNullOrWhiteSpace($resolved)) { return 'polynt.net' }
+    $resolved.Trim().ToLowerInvariant()
 }
 
 function Assert-CommandAvailable {
@@ -77,31 +80,67 @@ function Install-PolyntRequirement {
     }
 }
 
+function Get-PolyntCredentialEntries {
+    $entries = @()
+    if (Test-Path -LiteralPath $script:PolyntCredentialPath) {
+        try {
+            $saved = Import-Clixml -LiteralPath $script:PolyntCredentialPath -ErrorAction Stop
+            if ($saved.PSObject.Properties['Credentials']) { $entries = @($saved.Credentials) }
+        } catch { Write-Warning 'The saved domain credentials could not be read and will be ignored.' }
+    }
+    if (-not $entries.Count -and (Test-Path -LiteralPath $script:PolyntLegacyCredentialPath)) {
+        try {
+            $legacy = Import-Clixml -LiteralPath $script:PolyntLegacyCredentialPath -ErrorAction Stop
+            if ($legacy -is [pscredential]) { $entries = @([pscustomobject]@{Domain='polynt.net';Credential=$legacy}) }
+        } catch { Write-Warning 'The legacy saved credential could not be read and will be ignored.' }
+    }
+    @($entries | Where-Object { $_.Domain -and $_.Credential })
+}
+
+function Get-PolyntCredentialUserName {
+    [CmdletBinding()]
+    param([string]$Domain = 'polynt')
+    $credentialDomain = Resolve-PolyntCredentialDomain $Domain
+    $entry = @(Get-PolyntCredentialEntries | Where-Object { ([string]$_.Domain).ToLowerInvariant() -eq $credentialDomain } | Select-Object -First 1)
+    if ($entry.Count) { return [string]$entry[0].Credential.UserName }
+    if ($credentialDomain -eq 'polynt.net') { return [string]$script:PolyntAdminUser }
+    ''
+}
+
 function Get-PolyntCredential {
     [CmdletBinding()]
-    param([switch]$PromptIfMissing)
-    if (Test-Path -LiteralPath $script:PolyntCredentialPath) {
-        try { return Import-Clixml -LiteralPath $script:PolyntCredentialPath -ErrorAction Stop } catch { Write-Warning 'The saved credential could not be read and will be ignored.' }
-    }
-    $password = $env:POLYNT_ADMIN_PASSWORD
+    param([string]$Domain = 'polynt', [switch]$PromptIfMissing)
+    $credentialDomain = Resolve-PolyntCredentialDomain $Domain
+    $entry = @(Get-PolyntCredentialEntries | Where-Object { ([string]$_.Domain).ToLowerInvariant() -eq $credentialDomain } | Select-Object -First 1)
+    if ($entry.Count) { return $entry[0].Credential }
+    $password = if ($credentialDomain -eq 'polynt.net') { $env:POLYNT_ADMIN_PASSWORD } else { $null }
     if ($password) {
         if ([string]::IsNullOrWhiteSpace($script:PolyntAdminUser)) { throw 'POLYNT_ADMIN_USER must be set when POLYNT_ADMIN_PASSWORD is used.' }
         return [pscredential]::new($script:PolyntAdminUser, (ConvertTo-SecureString $password -AsPlainText -Force))
     }
     if ($PromptIfMissing) {
-        if ($script:PolyntAdminUser) { return Get-Credential -UserName $script:PolyntAdminUser -Message 'Enter your Polynt administrator credentials' }
-        return Get-Credential -Message 'Enter your Polynt administrator credentials'
+        $userName = Get-PolyntCredentialUserName -Domain $credentialDomain
+        if ($userName) { return Get-Credential -UserName $userName -Message "Enter administrator credentials for $credentialDomain" }
+        return Get-Credential -Message "Enter administrator credentials for $credentialDomain"
     }
-    throw 'No admin password is configured. Use Set-PolyntCredential or set POLYNT_ADMIN_PASSWORD.'
+    throw "No administrator credential is saved for $credentialDomain. Save it in Settings first."
 }
 
 function Set-PolyntCredential {
     [CmdletBinding()]
-    param([string]$UserName = $script:PolyntAdminUser, [Parameter(Mandatory)][securestring]$Password)
-    $script:PolyntAdminUser = $UserName
+    param(
+        [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$UserName,
+        [Parameter(Mandatory)][securestring]$Password,
+        [string]$Domain = 'polynt'
+    )
+    $credentialDomain = Resolve-PolyntCredentialDomain $Domain
+    $entries = @(Get-PolyntCredentialEntries | Where-Object { ([string]$_.Domain).ToLowerInvariant() -ne $credentialDomain })
+    $entries += [pscustomobject]@{Domain=$credentialDomain;Credential=[pscredential]::new($UserName,$Password)}
     $folder = Split-Path -Parent $script:PolyntCredentialPath
     if (-not (Test-Path -LiteralPath $folder)) { [void](New-Item -ItemType Directory -Path $folder -Force) }
-    [pscredential]::new($UserName, $Password) | Export-Clixml -LiteralPath $script:PolyntCredentialPath -Force
+    [pscustomobject]@{Version=2;Credentials=$entries} | Export-Clixml -LiteralPath $script:PolyntCredentialPath -Force
+    if ($credentialDomain -eq 'polynt.net') { $script:PolyntAdminUser = $UserName }
+    [pscustomobject]@{Domain=$credentialDomain;UserName=$UserName;Status='Credential saved'}
 }
 
 function Set-AssystSettings {
@@ -580,10 +619,10 @@ function Test-PolyntLocalComputer {
 
 function Get-PolyntComputerWmiObject {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Computer, [Parameter(Mandatory)][string]$Class, [string]$Namespace='root\cimv2')
+    param([Parameter(Mandatory)][string]$Computer, [Parameter(Mandatory)][string]$Class, [string]$Namespace='root\cimv2', [string]$Domain='polynt')
     $parameters = @{Class=$Class;Namespace=$Namespace;ComputerName=$Computer;ErrorAction='Stop'}
     if (-not (Test-PolyntLocalComputer -Computer $Computer)) {
-        $parameters.Credential = Get-PolyntCredential -PromptIfMissing
+        $parameters.Credential = Get-PolyntCredential -Domain $Domain -PromptIfMissing
         $parameters.Impersonation = 'Impersonate'
     }
     Get-WmiObject @parameters
@@ -591,13 +630,13 @@ function Get-PolyntComputerWmiObject {
 
 function Get-SN {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Name)
+    param([Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Name, [string]$Domain='polynt')
     try {
-        $bios = Get-PolyntComputerWmiObject -Class Win32_BIOS -Computer $Name
-        $system = Get-PolyntComputerWmiObject -Class Win32_ComputerSystem -Computer $Name
+        $bios = Get-PolyntComputerWmiObject -Class Win32_BIOS -Computer $Name -Domain $Domain
+        $system = Get-PolyntComputerWmiObject -Class Win32_ComputerSystem -Computer $Name -Domain $Domain
         [pscustomobject]@{ ComputerName=$Name; DeviceType='Computer'; SerialNumber=$bios.SerialNumber; Model=$system.Model }
         try {
-            Get-PolyntComputerWmiObject -Class HP_DockAccessory -Namespace 'root/HP/InstrumentedServices/v1' -Computer $Name | ForEach-Object {
+            Get-PolyntComputerWmiObject -Class HP_DockAccessory -Namespace 'root/HP/InstrumentedServices/v1' -Computer $Name -Domain $Domain | ForEach-Object {
                 [pscustomobject]@{ ComputerName=$Name; DeviceType='HP Dock'; SerialNumber=$_.SerialNumber; Model=if ($_.ProductName) {$_.ProductName} else {'HP Dock'} }
             }
         } catch { Write-Verbose "No HP dock information was available on $Name." }
@@ -638,9 +677,10 @@ function Start-PolyntProcessAsAdminUser {
     param(
         [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$FilePath,
         [string[]]$ArgumentList = @(),
+        [string]$Domain = 'polynt',
         [switch]$Hidden
     )
-    $credential = Get-PolyntCredential -PromptIfMissing
+    $credential = Get-PolyntCredential -Domain $Domain -PromptIfMissing
     $system32 = Join-Path $env:SystemRoot 'System32'
     $parameters = @{
         FilePath=$FilePath
@@ -661,12 +701,13 @@ function Invoke-PolyntPsExec {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$FilePath,
-        [string[]]$ArgumentList = @()
+        [string[]]$ArgumentList = @(),
+        [string]$Domain = 'polynt'
     )
     if (-not (Test-Path -LiteralPath $script:PsExecPath)) {
         throw "Bundled PsExec was not found at '$script:PsExecPath'."
     }
-    $credential = Get-PolyntCredential -PromptIfMissing
+    $credential = Get-PolyntCredential -Domain $Domain -PromptIfMissing
     $arguments = @('-accepteula','-nobanner','-d','-i','-u',$credential.UserName,'-p',$credential.GetNetworkCredential().Password,$FilePath)
     if ($ArgumentList.Count) { $arguments += $ArgumentList }
     $process = Start-Process -FilePath $script:PsExecPath -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
@@ -677,9 +718,9 @@ function Invoke-PolyntPsExec {
 
 function Start-PolyntMmcAsAdminUser {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$SnapIn)
+    param([Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$SnapIn, [string]$Domain='polynt')
 
-    $credential = Get-PolyntCredential -PromptIfMissing
+    $credential = Get-PolyntCredential -Domain $Domain -PromptIfMissing
     $system32 = Join-Path $env:SystemRoot 'System32'
     $mmcPath = Join-Path $system32 'mmc.exe'
     $snapInPath = Join-Path $system32 $SnapIn
@@ -706,13 +747,14 @@ function Start-PolyntMmcAsAdminUser {
 }
 
 function Get-PolyntAdmin {
+    param([string]$Domain='polynt')
     $powershellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    Start-PolyntProcessAsAdminUser -FilePath $powershellPath -ArgumentList @('-NoProfile','-NoExit')
+    Start-PolyntProcessAsAdminUser -FilePath $powershellPath -ArgumentList @('-NoProfile','-NoExit') -Domain $Domain
 }
 function Start-PolyntRemoteCDrive {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Computer)
-    $credential = Get-PolyntCredential -PromptIfMissing
+    param([Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Computer, [string]$Domain='polynt')
+    $credential = Get-PolyntCredential -Domain $Domain -PromptIfMissing
     $system32 = Join-Path $env:SystemRoot 'System32'
     $cmdKeyPath = Join-Path $system32 'cmdkey.exe'
     $netPath = Join-Path $system32 'net.exe'
@@ -733,8 +775,8 @@ function Start-PolyntRemoteCDrive {
 }
 function Start-PolyntRemoteDesktop {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Computer)
-    $credential = Get-PolyntCredential -PromptIfMissing
+    param([Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Computer, [string]$Domain='polynt')
+    $credential = Get-PolyntCredential -Domain $Domain -PromptIfMissing
     $cmdKeyPath = Join-Path $env:SystemRoot 'System32\cmdkey.exe'
     $mstscPath = Join-Path $env:SystemRoot 'System32\mstsc.exe'
     if (-not (Test-Path -LiteralPath $cmdKeyPath)) { throw "Windows Credential Manager command was not found at '$cmdKeyPath'." }
@@ -748,23 +790,23 @@ function Start-PolyntRemoteDesktop {
     }
     [pscustomobject]@{ComputerName=$Computer;UserName=$credential.UserName;Status='Remote Desktop started with the saved administrator credential'}
 }
-function Start-Dsa { Start-PolyntMmcAsAdminUser -SnapIn 'dsa.msc' }
-function Start-Compmgmt { Start-PolyntMmcAsAdminUser -SnapIn 'compmgmt.msc' }
+function Start-Dsa { param([string]$Domain='polynt') Start-PolyntMmcAsAdminUser -SnapIn 'dsa.msc' -Domain $Domain }
+function Start-Compmgmt { param([string]$Domain='polynt') Start-PolyntMmcAsAdminUser -SnapIn 'compmgmt.msc' -Domain $Domain }
 function Start-Msra {
-    param([string]$Computer)
+    param([string]$Computer, [string]$Domain='polynt')
     $msraArguments = @('/offerra')
     if ($Computer) { $msraArguments += $Computer }
     $quotedArguments = @($msraArguments | ForEach-Object { "'$(($_ -replace "'", "''"))'" }) -join ','
     $command = "Start-Process -FilePath 'msra.exe' -ArgumentList @($quotedArguments)"
     $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
-    Invoke-PolyntPsExec -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-NonInteractive','-WindowStyle','Hidden','-EncodedCommand',$encodedCommand)
+    Invoke-PolyntPsExec -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-NonInteractive','-WindowStyle','Hidden','-EncodedCommand',$encodedCommand) -Domain $Domain
     "Remote Assistance launch requested for $(if ($Computer) {$Computer} else {'computer selection'})."
 }
 
 function Get-PolyntLapsPwd {
     [CmdletBinding()] param([Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Computer, [string]$Domain)
     Assert-CommandAvailable Get-LapsADPassword
-    $params = @{Identity=$Computer;Credential=(Get-PolyntCredential -PromptIfMissing);AsPlainText=$true;ErrorAction='Stop'}
+    $params = @{Identity=$Computer;Credential=(Get-PolyntCredential -Domain $Domain -PromptIfMissing);AsPlainText=$true;ErrorAction='Stop'}
     $resolvedDomain = Resolve-PolyntDomain $Domain
     if ($resolvedDomain) { $params.Domain = $resolvedDomain }
     Get-LapsADPassword @params |
@@ -776,7 +818,7 @@ function Set-PC-Desc {
     param([Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Computer, [Parameter(Mandatory)][AllowEmptyString()][string]$Description, [string]$Domain)
     Assert-CommandAvailable Set-ADComputer
     $server = Resolve-PolyntDomain $Domain
-    $credential = Get-PolyntCredential -PromptIfMissing
+    $credential = Get-PolyntCredential -Domain $Domain -PromptIfMissing
     if ($PSCmdlet.ShouldProcess($Computer, "Set AD description to '$Description'")) {
         $params = @{ Identity=$Computer; Description=$Description; Credential=$credential; ErrorAction='Stop' }
         if ($server) { $params.Server = $server }
@@ -791,7 +833,7 @@ function Get-BitLockerRecoveryKey {
     Assert-CommandAvailable Get-ADComputer
     Assert-CommandAvailable Get-ADObject
     $server = Resolve-PolyntDomain $Domain
-    $credential = Get-PolyntCredential -PromptIfMissing
+    $credential = Get-PolyntCredential -Domain $Domain -PromptIfMissing
     $computerParams = @{ Identity=$Computer; Properties='DistinguishedName'; Credential=$credential; ErrorAction='Stop' }
     if ($server) { $computerParams.Server = $server }
     $adComputer = Get-ADComputer @computerParams
@@ -820,13 +862,15 @@ function Enable-PC {
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Computer,
-        [ValidateSet('Drocourt','Bordeaux')][string]$Site = 'Drocourt'
+        [ValidateSet('Drocourt','Bordeaux')][string]$Site = 'Drocourt',
+        [string]$Domain='polynt'
     )
     Assert-CommandAvailable Get-ADComputer
     Assert-CommandAvailable Set-ADComputer
     Assert-CommandAvailable Move-ADObject
-    $server = 'polynt.net'
-    $credential = Get-PolyntCredential -PromptIfMissing
+    $server = Resolve-PolyntDomain $Domain
+    if ($server -ne 'polynt.net') { throw 'Enable / move is currently available only for the Polynt domain.' }
+    $credential = Get-PolyntCredential -Domain $server -PromptIfMissing
     try {
         $adComputer = Get-ADComputer -Identity $Computer -Server $server -Credential $credential -Properties Description,DistinguishedName,Enabled -ErrorAction Stop
     } catch { throw "Computer '$Computer' was not found in Polynt AD. $($_.Exception.Message)" }
@@ -877,7 +921,7 @@ function Copy-PolyntADUserGroups {
     Assert-CommandAvailable Get-ADUser
     Assert-CommandAvailable Add-ADGroupMember
     $server = Resolve-PolyntDomain $Domain
-    $credential = Get-PolyntCredential -PromptIfMissing
+    $credential = Get-PolyntCredential -Domain $Domain -PromptIfMissing
     $sourceParams = @{Identity=$SourceUser;Properties='MemberOf';Credential=$credential;ErrorAction='Stop'}
     $targetParams = @{Identity=$TargetUser;Properties='MemberOf';Credential=$credential;ErrorAction='Stop'}
     if ($server) { $sourceParams.Server=$server;$targetParams.Server=$server }
@@ -912,7 +956,7 @@ function Add-PolyntADUserGroup {
     Assert-CommandAvailable Get-ADUser
     Assert-CommandAvailable Add-ADGroupMember
     $server = Resolve-PolyntDomain $Domain
-    $credential = Get-PolyntCredential -PromptIfMissing
+    $credential = Get-PolyntCredential -Domain $Domain -PromptIfMissing
     $userParams = @{Identity=$TargetUser;Properties='MemberOf';Credential=$credential;ErrorAction='Stop'}
     if ($server) { $userParams.Server=$server }
     $user = Get-ADUser @userParams
@@ -930,7 +974,7 @@ function Unlock-PolyntADUser {
     param([Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Identity, [string]$Domain)
     Assert-CommandAvailable Unlock-ADAccount
     $server = Resolve-PolyntDomain $Domain
-    $credential = Get-PolyntCredential -PromptIfMissing
+    $credential = Get-PolyntCredential -Domain $Domain -PromptIfMissing
     if ($PSCmdlet.ShouldProcess($Identity,'Unlock AD account')) {
         $params=@{Identity=$Identity;Credential=$credential;ErrorAction='Stop'};if($server){$params.Server=$server};Unlock-ADAccount @params
         Find-PolyntADUser -Identity $Identity -Domain $Domain
@@ -948,7 +992,7 @@ function Reset-PolyntADUserPassword {
     Assert-CommandAvailable Set-ADAccountPassword
     Assert-CommandAvailable Set-ADUser
     $server = Resolve-PolyntDomain $Domain
-    $credential = Get-PolyntCredential -PromptIfMissing
+    $credential = Get-PolyntCredential -Domain $Domain -PromptIfMissing
     if ($PSCmdlet.ShouldProcess($Identity,'Reset AD password')) {
         $passwordParams=@{Identity=$Identity;Reset=$true;NewPassword=$NewPassword;Credential=$credential;ErrorAction='Stop'}
         if($server){$passwordParams.Server=$server}
@@ -962,8 +1006,8 @@ function Reset-PolyntADUserPassword {
 
 function Get-PolyntTerminalSessions {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Computer)
-    $credential = Get-PolyntCredential -PromptIfMissing
+    param([Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Computer, [string]$Domain='polynt')
+    $credential = Get-PolyntCredential -Domain $Domain -PromptIfMissing
     $quserPath = Join-Path $env:SystemRoot 'System32\quser.exe'
     if (-not (Test-Path -LiteralPath $quserPath)) { throw "The Windows session-query tool was not found at '$quserPath'." }
     $temporaryFolder = if ($env:TEMP) { $env:TEMP } else { [IO.Path]::GetTempPath() }
@@ -993,14 +1037,14 @@ function Get-PolyntTerminalSessions {
 
 function Get-RemoteSession {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Computer)
+    param([Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Computer, [string]$Domain='polynt')
     try {
-        $system = Get-PolyntComputerWmiObject -Class Win32_ComputerSystem -Computer $Computer
+        $system = Get-PolyntComputerWmiObject -Class Win32_ComputerSystem -Computer $Computer -Domain $Domain
         if ($system.UserName) {
             [pscustomobject]@{ComputerName=$Computer;UserName=$system.UserName;SessionType='Interactive console';State='Active'}
             return
         }
-        $terminalSessions = @(Get-PolyntTerminalSessions -Computer $Computer)
+        $terminalSessions = @(Get-PolyntTerminalSessions -Computer $Computer -Domain $Domain)
         if ($terminalSessions.Count) { $terminalSessions; return }
         [pscustomobject]@{ComputerName=$Computer;UserName=$null;SessionType='Interactive and remote sessions';State='No user session found'}
     } catch { throw "Unable to query local or remote user sessions on '$Computer'. $($_.Exception.Message)" }
@@ -1008,14 +1052,14 @@ function Get-RemoteSession {
 
 function Get-RemoteSoftware {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Computer, [string]$Name='*')
+    param([Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Computer, [string]$Name='*', [string]$Domain='polynt')
     $hklm = 2147483650
     $paths = @('SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall','SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall')
     try {
         if (Test-PolyntLocalComputer -Computer $Computer) {
             $registry = [wmiclass]"\\$Computer\root\default:StdRegProv"
         } else {
-            $credential = Get-PolyntCredential -PromptIfMissing
+            $credential = Get-PolyntCredential -Domain $Domain -PromptIfMissing
             $registry = Get-WmiObject -List -Class StdRegProv -Namespace 'root\default' -ComputerName $Computer -Credential $credential -Impersonation Impersonate -ErrorAction Stop
         }
         $results = foreach ($path in $paths) {
@@ -1049,4 +1093,12 @@ function Get-RemoteSoftware {
 }
 
 # Compatibility with commands from the original profile script.
-function Set-Password { [CmdletBinding()] param([Parameter(Mandatory)][string]$pw) Set-PolyntCredential -Password (ConvertTo-SecureString $pw -AsPlainText -Force) }
+function Set-Password {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$pw,
+        [Parameter(Mandatory)][string]$UserName,
+        [string]$Domain='polynt'
+    )
+    Set-PolyntCredential -UserName $UserName -Password (ConvertTo-SecureString $pw -AsPlainText -Force) -Domain $Domain
+}

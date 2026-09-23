@@ -1,0 +1,11 @@
+.DS_Store
+*.xml
+response*.txt
+error*.txt
+tmp*.ps1
+script.sh
+*.csv
+*.png
+*.jpg
+*.jpeg
+*.log

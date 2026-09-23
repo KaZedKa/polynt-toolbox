@@ -1,4 +1,4 @@
-# polynt-toolbox
+# Polynt IT Toolbox
 
 A portable Windows PowerShell 5.1 toolbox for routine computer, Active Directory, and Assyst asset-management work. The interface is implemented with Windows Presentation Foundation (WPF), so no separate UI framework needs to be installed.
 
@@ -36,7 +36,7 @@ Keep the launcher, `tools` directory, scripts, and `PsExec.exe` together when co
 ## First-time setup
 
 1. Open **Settings**.
-2. Enter the support agent's administrator username and password, then select **Save credential**.
+2. Choose an administrator-credential domain, enter the support agent's username and password for that domain, then select **Save credential**. Repeat for every domain the agent supports.
 3. Enter the Assyst REST base URL and the Base64-encoded `user:password` value, choose whether the test server's self-signed certificate is allowed, select the default movement reason, and select **Save Assyst settings**.
 4. Choose light or dark mode as preferred.
 
@@ -60,15 +60,15 @@ The toolbox does not automatically install Windows LAPS. If the `Get-LapsADPassw
 
 Administrator and Assyst credentials are saved per Windows user under `%LOCALAPPDATA%\PolyntToolbox`:
 
-- `credential.xml` contains the administrator credential.
+- `credentials.xml` contains the administrator credentials, stored separately for `polynt.net`, `rsn.chem.corp.local`, and `eu.reichhold.com`.
 - `assyst.xml` contains the Assyst settings and Basic value.
 - `state.json` contains recent computer/item names and the theme preference.
 
-On Windows, credential values exported to the XML files are protected with DPAPI and can only be decrypted by the same Windows user on the same computer. They are not stored in the application directory. `POLYNT_ADMIN_USER`, `POLYNT_ADMIN_PASSWORD`, `ASSYST_API_BASE`, and `ASSYST_BASIC_AUTH` can be supplied as deployment-managed environment variables instead.
+On Windows, credential values exported to the XML files are protected with DPAPI and can only be decrypted by the same Windows user on the same computer. They are not stored in the application directory. A legacy single `credential.xml` file is treated as the Polynt credential and is carried into the new store the next time credentials are saved. `POLYNT_ADMIN_USER` and `POLYNT_ADMIN_PASSWORD` remain optional deployment-managed fallbacks for Polynt; `ASSYST_API_BASE` and `ASSYST_BASIC_AUTH` can configure Assyst.
 
 Remote Desktop and **Open C drive** prepare the saved administrator credential with Windows Credential Manager (`cmdkey`). Windows may retain those target-specific entries after the application closes. Remote Assistance passes the saved administrator identity to the bundled PsExec launcher.
 
-Read-only AD computer, description, user, and group lookups use the signed-in Windows account. AD changes, LAPS, BitLocker recovery, remote inventory, remote session checks, administrative shares, RDP, Remote Assistance, and administrative launchers use the saved administrator credential where required.
+Read-only AD computer, description, user, and group lookups use the signed-in Windows account. AD changes, LAPS, BitLocker recovery, remote inventory, remote session checks, administrative shares, RDP, Remote Assistance, and administrative launchers use the saved administrator credential for the domain selected on the relevant tab.
 
 ## Computers
 
@@ -86,6 +86,8 @@ The **Computers** tab provides:
 - LAPS and BitLocker recovery retrieval and copying.
 - Administrator PowerShell, Active Directory Users and Computers, and Computer Management launchers.
 
+Polynt is selected by default. Changing the computer domain changes both the AD server used by domain-aware lookups and the administrator credential used by remote and privileged computer actions. **Enable / move** remains Polynt-only because its destination OUs are specific to the Polynt domain.
+
 The computer and Assyst item fields retain up to 15 recent entries per Windows user.
 
 ## Users & Groups
@@ -94,7 +96,7 @@ The **Users & Groups** tab supports user lookup, account unlock, and password re
 
 The group-transfer section compares two users' direct AD group memberships. It can copy one selected membership or every missing direct membership in either direction. Existing memberships are retained, and the primary group is not changed.
 
-Read-only user and group lookups use the signed-in account. Unlock, password reset, and group changes use the saved administrator credential.
+Read-only user and group lookups use the signed-in account. Unlock, password reset, and group changes use the saved administrator credential corresponding to the selected user domain.
 
 ## Assets (Assyst)
 
