@@ -178,9 +178,9 @@ function Invoke-Wpf($Activity,[scriptblock]$Action){
     }finally{$window.Cursor=$null}
 }
 function Require-WpfText($Control,$Name){if([string]::IsNullOrWhiteSpace($Control.Text)){throw "$Name is required."};$Control.Text.Trim()}
-function Fill-Domains($Combo){$Combo.ItemsSource=@('Polynt','Resins','Reichhold');$Combo.SelectedIndex=0}
-function Fill-CredentialDomains($Combo){$Combo.ItemsSource=@('polynt.net','rsn.chem.corp.local','eu.reichhold.com');$Combo.SelectedIndex=0}
-function Get-WpfDomain($Combo){switch($Combo.SelectedIndex){1{'resins'}2{'reichhold'}default{'polynt'}}}
+function Fill-Domains($Combo){$Combo.ItemsSource=@('Polynt (.net)','Polynt (.us)','Resins','Reichhold');$Combo.SelectedIndex=0}
+function Fill-CredentialDomains($Combo){$Combo.ItemsSource=@('polynt.net','polynt.us','rsn.chem.corp.local','apac.reichhold.com');$Combo.SelectedIndex=0}
+function Get-WpfDomain($Combo){switch($Combo.SelectedIndex){1{'polynt.us'}2{'resins'}3{'reichhold'}default{'polynt'}}}
 function Refresh-WpfCredentialUser {$AdminUser.Text=Get-PolyntCredentialUserName -Domain (Get-WpfDomain $CredentialDomain);$AdminPassword.Clear()}
 function Confirm-Wpf($Message,$Title){[Windows.MessageBox]::Show($window,$Message,$Title,'YesNo','Warning') -eq 'Yes'}
 function Add-WpfEnterAction($Control,$Button){$Control.Tag=$Button;$Control.Add_KeyDown({param($sender,$eventArgs);if($eventArgs.Key -eq [Windows.Input.Key]::Enter){$eventArgs.Handled=$true;$sender.Tag.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))}})}

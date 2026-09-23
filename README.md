@@ -60,7 +60,7 @@ The toolbox does not automatically install Windows LAPS. If the `Get-LapsADPassw
 
 Administrator and Assyst credentials are saved per Windows user under `%LOCALAPPDATA%\PolyntToolbox`:
 
-- `credentials.xml` contains the administrator credentials, stored separately for `polynt.net`, `rsn.chem.corp.local`, and `eu.reichhold.com`.
+- `credentials.xml` contains the administrator credentials, stored separately for `polynt.net`, `polynt.us`, `rsn.chem.corp.local`, and `apac.reichhold.com`.
 - `assyst.xml` contains the Assyst settings and Basic value.
 - `state.json` contains recent computer/item names and the theme preference.
 
@@ -86,7 +86,7 @@ The **Computers** tab provides:
 - LAPS and BitLocker recovery retrieval and copying.
 - Administrator PowerShell, Active Directory Users and Computers, and Computer Management launchers.
 
-Polynt is selected by default. Changing the computer domain changes both the AD server used by domain-aware lookups and the administrator credential used by remote and privileged computer actions. **Enable / move** remains Polynt-only because its destination OUs are specific to the Polynt domain.
+Polynt (.net) is selected by default. Changing the computer domain changes both the AD server used by domain-aware lookups and the administrator credential used by remote and privileged computer actions. **Enable / move** remains available only for `polynt.net` because its destination OUs are specific to that domain.
 
 The computer and Assyst item fields retain up to 15 recent entries per Windows user.
 

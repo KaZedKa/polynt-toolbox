@@ -41,8 +41,9 @@ function Resolve-PolyntDomain {
     if ([string]::IsNullOrWhiteSpace($Domain)) { return '' }
     switch ($Domain.Trim().ToLowerInvariant()) {
         'polynt' { 'polynt.net' }
+        { $_ -in @('polynt-us','polynt us') } { 'polynt.us' }
         { $_ -in @('resins','rsn') } { 'rsn.chem.corp.local' }
-        'reichhold' { 'eu.reichhold.com' }
+        { $_ -in @('reichhold','eu.reichhold.com') } { 'apac.reichhold.com' }
         default { $Domain }
     }
 }
@@ -94,7 +95,10 @@ function Get-PolyntCredentialEntries {
             if ($legacy -is [pscredential]) { $entries = @([pscustomobject]@{Domain='polynt.net';Credential=$legacy}) }
         } catch { Write-Warning 'The legacy saved credential could not be read and will be ignored.' }
     }
-    @($entries | Where-Object { $_.Domain -and $_.Credential })
+    foreach ($entry in @($entries | Where-Object { $_.Domain -and $_.Credential })) {
+        $entry.Domain = Resolve-PolyntCredentialDomain ([string]$entry.Domain)
+        $entry
+    }
 }
 
 function Get-PolyntCredentialUserName {
